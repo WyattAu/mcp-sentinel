@@ -75,3 +75,9 @@ definition pinning does not.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Local overrides
+
+`.cargo/config.toml` (target-dir redirects, custom registries) is machine-local:
+do not commit it. Absolute paths under a maintainer home break CI and every
+other machine — the portability failure class this repo exists to prevent.
