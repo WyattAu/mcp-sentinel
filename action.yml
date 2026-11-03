@@ -1,0 +1,46 @@
+name: mcp-sentinel scan
+description: >
+  Scan a repository for MCP config entries and flag supply-chain IoCs
+  (Deadbugz campaign endpoints, hidden-path staging, plaintext remotes).
+  Fails the step on CRITICAL findings.
+branding:
+  icon: shield
+  color: red
+inputs:
+  path:
+    description: Repository path to scan
+    required: false
+    default: ${{ github.workspace }}
+  fail-on-critical:
+    description: Fail the step when CRITICAL findings exist
+    required: false
+    default: "true"
+outputs:
+  findings:
+    description: JSON scan report (findings + server entries)
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -o pipefail
+        VER="0.1.0"
+        BIN="/tmp/mcp-sentinel_${VER}"
+        if [ ! -x "$BIN" ]; then
+          curl -fsSL -o "$BIN" \
+            "https://github.com/WyattAu/mcp-sentinel/releases/latest/download/mcp-sentinel_${VER}_linux_x86_64"
+          chmod +x "$BIN"
+        fi
+        "$BIN" scan "${{ inputs.path }}" --json | tee /tmp/mcp-sentinel-scan.json || true
+        CRIT=$(python3 -c "
+        import json
+        d = json.load(open('/tmp/mcp-sentinel-scan.json'))
+        print(d['critical'])")
+        echo "findings=$(python3 -c "
+        import json
+        d = json.load(open('/tmp/mcp-sentinel-scan.json'))
+        print(json.dumps({'critical': d['critical'], 'warn': d['warn'], 'servers': d['servers']}))")" >> "$GITHUB_OUTPUT"
+        if [ "${{ inputs.fail-on-critical }}" = "true" ] && [ "$CRIT" -gt 0 ]; then
+          echo "::error::mcp-sentinel: $CRIT CRITICAL MCP config finding(s) — see /tmp/mcp-sentinel-scan.json"
+          exit 1
+        fi

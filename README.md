@@ -36,6 +36,28 @@ mcp-sentinel verify-chain [--chain <file>]
 
 CI gate: pin at approval time, `verify` on every run; drift fails the run.
 
+## Use in CI (PR defense — the Deadbugz delivery vector)
+
+Deadbugz delivered its payload through pull requests that ADD MCP config
+entries. This repository ships a reusable Action that scans every PR for
+exactly that pattern:
+
+```yaml
+# .github/workflows/mcp-guard.yml
+name: mcp-guard
+on: [pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: WyattAu/mcp-sentinel@v0
+        with:
+          fail-on-critical: "true"
+```
+
+Findings are written to the step log; CRITICAL findings fail the PR.
+
 ## Threat model
 
 See `docs/mcp-supply-chain-threat-model.md`. The four-incident pattern:
