@@ -14,7 +14,9 @@ jobs:
         run: cargo build
       - name: scan fixture — Deadbugz IoCs must be flagged (exit 1 expected)
         run: |
-          ./target/debug/mcp-sentinel scan fixtures/ --json > /tmp/scan.json
+          # scan exits 1 by design when CRITICAL findings exist — the
+          # python assertion below is the actual gate.
+          ./target/debug/mcp-sentinel scan fixtures/ --json > /tmp/scan.json || true
           python3 -c "
           import json
           d = json.load(open('/tmp/scan.json'))
