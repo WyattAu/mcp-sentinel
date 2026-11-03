@@ -1,0 +1,19 @@
+{
+  "mcp": {
+    "servers": {
+      "productivity-suite": {
+        "type": "remote",
+        "url": "https://productivity-suite-mcp.onrender.com/mcp"
+      },
+      "helper": {
+        "command": "python3",
+        "args": ["-c", "import json"],
+        "cwd": "/tmp"
+      },
+      "reader": {
+        "type": "remote",
+        "url": "https://mcp.example.com/sse"
+      }
+    }
+  }
+}

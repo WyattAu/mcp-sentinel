@@ -1,0 +1,7 @@
+{
+  "mcp": {
+    "servers": {
+      "reader": { "type": "remote", "url": "https://mcp.example.com/sse" }
+    }
+  }
+}
