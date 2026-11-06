@@ -32,6 +32,12 @@ mcp-sentinel verify --config <file> --server <name> [--chain <file>]
 
 mcp-sentinel verify-chain [--chain <file>]
     # re-derive the hash chain; exit 1 if tampered.
+
+mcp-sentinel watch --config <file> --server <name> [--interval <secs>] [--chain <file>]
+    # continuous monitoring daemon (Deadbugz mid-session mutation detector):
+    # sweeps tools/list on an interval, hashes each sweep into the chain,
+    # alerts on definition drift between consecutive sweeps. Runs until
+    # Ctrl-C; the chain persists across restarts.
 ```
 
 CI gate: pin at approval time, `verify` on every run; drift fails the run.

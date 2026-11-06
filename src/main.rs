@@ -19,6 +19,7 @@ mod store;
 use serde_json::json;
 use sha2::Digest;
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub const CHAIN_DEFAULT: &str = ".mcp-sentinel/chain.json";
 
@@ -29,12 +30,14 @@ fn main() {
         Some("pin") => cmd_pin(&args[1..]),
         Some("verify") => cmd_verify(&args[1..]),
         Some("verify-chain") => cmd_verify_chain(&args[1..]),
+        Some("watch") => cmd_watch(&args[1..]),
         _ => {
             eprintln!(
                 "usage: mcp-sentinel scan <path> [--json]\n       \
                  mcp-sentinel pin --config <file> --server <name> [--chain <file>]\n       \
                  mcp-sentinel verify --config <file> --server <name> [--chain <file>]\n       \
-                 mcp-sentinel verify-chain [--chain <file>]"
+                 mcp-sentinel verify-chain [--chain <file>]\n       \
+                 mcp-sentinel watch --config <file> --server <name> [--interval <secs>] [--chain <file>]"
             );
             2
         }
@@ -192,5 +195,87 @@ fn cmd_verify_chain(args: &[String]) -> i32 {
         0
     } else {
         1
+    }
+}
+
+
+/// Continuous tools/list monitoring for one stdio server: the Deadbugz
+/// mid-session-mutation detector. Each sweep hashes tools/list and compares
+/// against the previous sweep; drift is both logged and written into the
+/// tamper-evident chain (action "drift-detected"), so the mutation record
+/// itself is hash-chained.
+///
+/// Usage:
+///   mcp-sentinel watch --config <file> --server <name> [--interval <secs>] [--chain <file>]
+///
+/// Exits on Ctrl-C (the chain persists; sweeps resume on next start).
+fn cmd_watch(args: &[String]) -> i32 {
+    let get = |name: &str| -> Option<String> {
+        args.iter().position(|a| a == name).and_then(|p| args.get(p + 1)).cloned()
+    };
+    let (Some(config), Some(server)) = (get("--config"), get("--server")) else {
+        eprintln!("watch requires --config <file> --server <name>");
+        return 2;
+    };
+    let interval: u64 = get("--interval")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let chain_path = chain_path(args);
+
+    let mut last_hash: Option<String> = None;
+    let mut sweep: u64 = 0;
+    loop {
+        sweep += 1;
+        match mcp_client::probe_tools(&config, &server) {
+                Ok(tools) => {
+                    let canonical = serde_json::to_string(&tools).unwrap_or_default();
+                    let mut h = sha2::Sha256::new();
+                    h.update(canonical.as_bytes());
+                    let hash = format!("{:x}", h.finalize());
+                    let drift = last_hash.is_some() && last_hash.as_deref() != Some(hash.as_str());
+                    let first = last_hash.is_none();
+                    let entry_kind = if drift { "drift-detected" } else { "observe-tools" };
+                    println!(
+                        "{}",
+                        json!({
+                            "sweep": sweep, "server": server, "hash": hash, "drift": drift,
+                            "first": first, "tools_count": tools.get("tools")
+                                .and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0),
+                        })
+                    );
+                    if drift {
+                        eprintln!(
+                            "mcp-sentinel: TOOL DEFINITION DRIFT on `{server}` (sweep {sweep})"
+                        );
+                    }
+                    let mut chain = match store::load(&chain_path) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("chain load failed: {e}");
+                            return 2;
+                        }
+                    };
+                    let previous = chain
+                        .entries
+                        .last()
+                        .map(|e| e.hash.clone())
+                        .unwrap_or_else(|| "0".repeat(64));
+                    chain.entries.push(tamper_audit::AuditEntry::new(
+                        "mcp-sentinel-watch",
+                        entry_kind,
+                        &server,
+                        json!({"sweep": sweep, "hash": hash, "drift": drift}),
+                        &previous,
+                    ));
+            if let Err(e) = store::save(&chain_path, &chain) {
+                eprintln!("chain save failed: {e}");
+            }
+            last_hash = Some(hash);
+        }
+        Err(e) => {
+            eprintln!("mcp-sentinel: probe failed (sweep {sweep}): {e}");
+        }
+    }
+        std::thread::sleep(Duration::from_secs(interval));
     }
 }
