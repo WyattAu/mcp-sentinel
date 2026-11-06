@@ -16,7 +16,7 @@ mod mcp_client;
 mod scan;
 mod store;
 
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::Digest;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -53,16 +53,59 @@ fn chain_path(args: &[String]) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(CHAIN_DEFAULT))
 }
 
-fn cmd_pin(args: &[String]) -> i32 {
+/// A probe target: local stdio server (config+name) or remote HTTP URL.
+enum Target {
+    Stdio { config: String, server: String },
+    Remote { url: String, headers: Vec<(String, String)> },
+}
+
+fn parse_target(args: &[String]) -> Result<Target, String> {
     let get = |name: &str| -> Option<String> {
         args.iter().position(|a| a == name).and_then(|p| args.get(p + 1)).cloned()
     };
+    if let Some(url) = get("--url") {
+        let mut headers = Vec::new();
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == "--header" {
+                if let Some(hv) = args.get(i + 1) {
+                    if let Some((k, v)) = hv.split_once(':') {
+                        headers.push((k.trim().to_string(), v.trim().to_string()));
+                    }
+                    i += 1;
+                }
+            }
+            i += 1;
+        }
+        return Ok(Target::Remote { url, headers });
+    }
     let (Some(config), Some(server)) = (get("--config"), get("--server")) else {
-        eprintln!("pin requires --config <file> --server <name>");
-        return 2;
+        return Err("requires --config <file> --server <name> (stdio) or --url <endpoint> (remote)".into());
+    };
+    Ok(Target::Stdio { config, server })
+}
+
+fn probe_target(t: &Target) -> Result<Value, String> {
+    match t {
+        Target::Stdio { config, server } => mcp_client::probe_tools(config, server),
+        Target::Remote { url, headers } => mcp_client::probe_remote_tools(url, headers),
+    }
+}
+
+fn cmd_pin(args: &[String]) -> i32 {
+    let target = match parse_target(args) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("pin {e}");
+            return 2;
+        }
+    };
+    let server = match &target {
+        Target::Stdio { server, .. } => server.clone(),
+        Target::Remote { url, .. } => url.clone(),
     };
     let chain_path = chain_path(args);
-    match mcp_client::probe_tools(&config, &server) {
+    match probe_target(&target) {
         Ok(tools) => {
             let canonical = serde_json::to_string(&tools).unwrap_or_default();
             let mut h = sha2::Sha256::new();
@@ -88,7 +131,7 @@ fn cmd_pin(args: &[String]) -> i32 {
                 json!({
                     "tools_hash": hash,
                     "tools_count": tools.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0),
-                    "config": config,
+                    "target": server,
                 }),
                 &previous,
             );
@@ -113,12 +156,16 @@ fn cmd_pin(args: &[String]) -> i32 {
 }
 
 fn cmd_verify(args: &[String]) -> i32 {
-    let get = |name: &str| -> Option<String> {
-        args.iter().position(|a| a == name).and_then(|p| args.get(p + 1)).cloned()
+    let target = match parse_target(args) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("verify {e}");
+            return 2;
+        }
     };
-    let (Some(config), Some(server)) = (get("--config"), get("--server")) else {
-        eprintln!("verify requires --config <file> --server <name>");
-        return 2;
+    let server = match &target {
+        Target::Stdio { server, .. } => server.clone(),
+        Target::Remote { url, .. } => url.clone(),
     };
     let chain_path = chain_path(args);
     let chain = match store::load(&chain_path) {
@@ -140,7 +187,7 @@ fn cmd_verify(args: &[String]) -> i32 {
         return 1;
     };
 
-    match mcp_client::probe_tools(&config, &server) {
+    match probe_target(&target) {
         Ok(tools) => {
             let canonical = serde_json::to_string(&tools).unwrap_or_default();
             let mut h = sha2::Sha256::new();

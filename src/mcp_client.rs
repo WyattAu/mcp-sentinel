@@ -111,3 +111,105 @@ pub fn probe_tools(config_path: &str, server: &str) -> Result<Value, String> {
     let mut conn = McpConnection::spawn(&command, &args)?;
     conn.tools_list()
 }
+
+// ─── remote (streamable HTTP) probing ───
+
+/// Probe a remote MCP server over streamable HTTP: initialize -> (session) ->
+/// tools/list. Returns the tools/list result Value for hashing.
+pub fn probe_remote_tools(
+    url: &str,
+    extra_headers: &[(String, String)],
+) -> Result<Value, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into();
+
+    // 1. initialize
+    let init_body = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "mcp-sentinel", "version": "0.2.0"},
+        }
+    })
+    .to_string();
+    let mut req = agent.post(url);
+    req = req.header("Content-Type", "application/json");
+    req = req.header("Accept", "application/json, text/event-stream");
+    req = req.header("mcp-protocol-version", "2025-06-18");
+    for (k, v) in extra_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let mut resp = req
+        .send(init_body.as_bytes())
+        .map_err(|e| format!("initialize POST failed: {e}"))?;
+    let session_id = resp
+        .headers()
+        .get("mcp-session-id")
+        .map(|v| String::from_utf8_lossy(v.as_bytes()).to_string());
+    let status = resp.status().as_u16();
+    let text = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
+    if status >= 400 {
+        return Err(format!("initialize HTTP {status}: {}", text.chars().take(200).collect::<String>()));
+    }
+    let init_result = parse_body(&text)?;
+
+    // 2. notifications/initialized (no body expected; 202 tolerated)
+    let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    let mut note_req = agent.post(url);
+    note_req = note_req.header("Content-Type", "application/json");
+    note_req = note_req.header("Accept", "application/json, text/event-stream");
+    for (k, v) in extra_headers {
+        note_req = note_req.header(k.as_str(), v.as_str());
+    }
+    let _ = note_req
+        .send(note)
+        .map_err(|e| format!("initialized notification failed: {e}"));
+
+    // 3. tools/list
+    let list_body = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        .to_string();
+    let mut req = agent.post(url);
+    req = req.header("Content-Type", "application/json");
+    req = req.header("Accept", "application/json, text/event-stream");
+    req = req.header("mcp-protocol-version", "2025-06-18");
+    for (k, v) in extra_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    if let Some(sid) = &session_id {
+        req = req.header("mcp-session-id", sid);
+    }
+    let mut resp = req
+        .send(list_body.as_bytes())
+        .map_err(|e| format!("tools/list POST failed: {e}"))?;
+    let status = resp.status().as_u16();
+    let text = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
+    if status >= 400 {
+        return Err(format!("tools/list HTTP {status}: {}", text.chars().take(200).collect::<String>()));
+    }
+    let resp_val = parse_body(&text)?;
+    resp_val
+        .get("result")
+        .cloned()
+        .ok_or_else(|| "tools/list returned no result".to_string())
+}
+
+fn parse_body(text: &str) -> Result<Value, String> {
+    let trimmed = text.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return serde_json::from_str(trimmed).map_err(|e| format!("JSON parse: {e}"));
+    }
+    // SSE: concatenate all data: lines (one event per JSON-RPC response)
+    let mut data = String::new();
+    for line in trimmed.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            data.push_str(rest.trim_start());
+        }
+    }
+    if data.is_empty() {
+        return Err("empty SSE body".into());
+    }
+    serde_json::from_str(&data).map_err(|e| format!("SSE data parse: {e}"))
+}
