@@ -202,16 +202,22 @@ pub fn load_server_config(config_path: &str, server: &str) -> Result<(String, Ve
         .flatten()
         .find_map(|c| c.get(server))
         .ok_or_else(|| format!("server `{server}` not found in {config_path}"))?;
-    let command = entry
-        .get("command")
-        .and_then(|c| c.as_str())
-        .ok_or_else(|| "only local stdio servers can be probed in v0.1".to_string())?
-        .to_string();
-    let args: Vec<String> = entry
-        .get("args")
-        .and_then(|a| a.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+    // Two shapes: Claude-style `command: "bin"` + `args: [...]`, and
+    // OpenCode-style `command: ["bin", "arg", ...]` (no args key).
+    let (mut command, mut args): (String, Vec<String>) = match entry.get("command") {
+        Some(Value::String(c)) => (c.clone(), Vec::new()),
+        Some(Value::Array(a)) => {
+            let mut parts = a.iter().filter_map(|x| x.as_str().map(String::from));
+            let c = parts
+                .next()
+                .ok_or_else(|| "only local stdio servers can be probed in v0.1".to_string())?;
+            (c, parts.collect())
+        }
+        _ => return Err("only local stdio servers can be probed in v0.1".to_string()),
+    };
+    if let Some(a) = entry.get("args").and_then(|a| a.as_array()) {
+        args.extend(a.iter().filter_map(|x| x.as_str().map(String::from)));
+    }
     Ok((command, args))
 }
 
