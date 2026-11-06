@@ -14,6 +14,7 @@
 mod ioc;
 mod mcp_client;
 mod scan;
+mod serve;
 mod store;
 
 use serde_json::{json, Value};
@@ -27,6 +28,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
         Some("scan") => scan::cmd_scan(&args[1..]),
+        Some("serve") => serve::cmd_serve(&args[1..]),
         Some("pin") => cmd_pin(&args[1..]),
         Some("verify") => cmd_verify(&args[1..]),
         Some("verify-chain") => cmd_verify_chain(&args[1..]),
@@ -59,7 +61,7 @@ enum Target {
     Remote { url: String, headers: Vec<(String, String)> },
 }
 
-fn parse_target(args: &[String]) -> Result<Target, String> {
+pub fn parse_target(args: &[String]) -> Result<Target, String> {
     let get = |name: &str| -> Option<String> {
         args.iter().position(|a| a == name).and_then(|p| args.get(p + 1)).cloned()
     };
@@ -85,7 +87,7 @@ fn parse_target(args: &[String]) -> Result<Target, String> {
     Ok(Target::Stdio { config, server })
 }
 
-fn probe_target(t: &Target) -> Result<Value, String> {
+pub fn probe_target(t: &Target) -> Result<Value, String> {
     match t {
         Target::Stdio { config, server } => mcp_client::probe_tools(config, server),
         Target::Remote { url, headers } => mcp_client::probe_remote_tools(url, headers),
